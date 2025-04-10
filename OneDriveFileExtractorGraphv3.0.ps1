@@ -120,6 +120,12 @@ function Parse-SharePointUrl {
         IsPersonalSite = $false
     }
     
+    # Check if URL is null or empty
+    if ([string]::IsNullOrEmpty($Url)) {
+        Write-Host "Error: Empty or null SharePoint URL provided." -ForegroundColor Red
+        return $urlInfo
+    }
+    
     # Clean URL (remove query parameters)
     if ($Url -match '([^?]*)') {
         $Url = $matches[1]
@@ -170,6 +176,12 @@ function Get-SiteId {
     )
     
     try {
+        # Check parameters
+        if ([string]::IsNullOrEmpty($TenantDomain)) {
+            Write-Host "Error: TenantDomain is null or empty" -ForegroundColor Red
+            return $null
+        }
+        
         Write-Host "Attempting to retrieve site using SharePoint URL patterns..." -ForegroundColor Cyan
         $site = $null
         
@@ -177,26 +189,46 @@ function Get-SiteId {
         if ($SitePath -match "/personal/") {
             Write-Host "Trying to access personal site with path: $SitePath" -ForegroundColor Cyan
             $siteIdPath = $TenantDomain + ":" + $SitePath
-            $site = Get-MgSite -SiteId $siteIdPath -ErrorAction SilentlyContinue
+            try {
+                $site = Get-MgSite -SiteId $siteIdPath -ErrorAction Stop
+            }
+            catch {
+                Write-Host "Could not access personal site with direct path: $($_.Exception.Message)" -ForegroundColor Yellow
+            }
         }
         
         # Try team site access
         if (-not $site -and $SitePath -match "/sites/") {
             Write-Host "Trying to access team site with path: $SitePath" -ForegroundColor Cyan
             $siteIdPath = $TenantDomain + ":" + $SitePath
-            $site = Get-MgSite -SiteId $siteIdPath -ErrorAction SilentlyContinue
+            try {
+                $site = Get-MgSite -SiteId $siteIdPath -ErrorAction Stop
+            }
+            catch {
+                Write-Host "Could not access team site with direct path: $($_.Exception.Message)" -ForegroundColor Yellow
+            }
         }
         
         # Try tenant root site
         if (-not $site) {
             Write-Host "Trying to access root site..." -ForegroundColor Yellow
-            $site = Get-MgSite -SiteId $TenantDomain -ErrorAction SilentlyContinue
+            try {
+                $site = Get-MgSite -SiteId $TenantDomain -ErrorAction Stop
+            }
+            catch {
+                Write-Host "Could not access root site: $($_.Exception.Message)" -ForegroundColor Yellow
+            }
         }
         
         # Try root keyword
         if (-not $site) {
             Write-Host "Trying to access using root identifier..." -ForegroundColor Yellow
-            $site = Get-MgSite -SiteId "root" -ErrorAction SilentlyContinue
+            try {
+                $site = Get-MgSite -SiteId "root" -ErrorAction Stop
+            }
+            catch {
+                Write-Host "Could not access using root identifier: $($_.Exception.Message)" -ForegroundColor Yellow
+            }
         }
         
         # Return if site found
@@ -211,7 +243,12 @@ function Get-SiteId {
             Write-Host "Trying to access site by direct name: $siteName" -ForegroundColor Yellow
             
             $siteIdPath = $TenantDomain + ":" + "/sites/$siteName"
-            $site = Get-MgSite -SiteId $siteIdPath -ErrorAction SilentlyContinue
+            try {
+                $site = Get-MgSite -SiteId $siteIdPath -ErrorAction Stop
+            }
+            catch {
+                Write-Host "Could not access site by direct name: $($_.Exception.Message)" -ForegroundColor Yellow
+            }
             
             if ($site) {
                 Write-Host "Found site: $($site.DisplayName) with URL: $($site.WebUrl)" -ForegroundColor Green
@@ -228,7 +265,12 @@ function Get-SiteId {
                 $siteIdFormat = "$tenantPrefix.sharepoint.com,sites,$siteName"
                 Write-Host "Trying alternative site ID format: $siteIdFormat" -ForegroundColor Yellow
                 
-                $site = Get-MgSite -SiteId $siteIdFormat -ErrorAction SilentlyContinue
+                try {
+                    $site = Get-MgSite -SiteId $siteIdFormat -ErrorAction Stop
+                }
+                catch {
+                    Write-Host "Could not access site with alternative format: $($_.Exception.Message)" -ForegroundColor Yellow
+                }
                 
                 if ($site) {
                     Write-Host "Found site using alternative format: $($site.DisplayName)" -ForegroundColor Green
@@ -240,7 +282,12 @@ function Get-SiteId {
                 $siteIdFormat = "$tenantPrefix.sharepoint.com,personal,$userPath"
                 Write-Host "Trying alternative personal site ID format: $siteIdFormat" -ForegroundColor Yellow
                 
-                $site = Get-MgSite -SiteId $siteIdFormat -ErrorAction SilentlyContinue
+                try {
+                    $site = Get-MgSite -SiteId $siteIdFormat -ErrorAction Stop
+                }
+                catch {
+                    Write-Host "Could not access personal site with alternative format: $($_.Exception.Message)" -ForegroundColor Yellow
+                }
                 
                 if ($site) {
                     Write-Host "Found personal site using alternative format: $($site.DisplayName)" -ForegroundColor Green
@@ -254,6 +301,7 @@ function Get-SiteId {
     }
     catch {
         Write-Host "Error retrieving site ID: $_" -ForegroundColor Red
+        Write-Host "Exception details: $($_.Exception.Message)" -ForegroundColor Red
         return $null
     }
 }
@@ -265,7 +313,12 @@ function Get-SiteDrives {
     )
     
     try {
-        $drives = Get-MgSiteDrive -SiteId $SiteId
+        if ([string]::IsNullOrEmpty($SiteId)) {
+            Write-Host "Error: SiteId is null or empty" -ForegroundColor Red
+            return $null
+        }
+        
+        $drives = Get-MgSiteDrive -SiteId $SiteId -ErrorAction Stop
         
         if ($drives -and $drives.Count -gt 0) {
             Write-Host "Found $($drives.Count) drives in site." -ForegroundColor Green
@@ -278,6 +331,7 @@ function Get-SiteDrives {
     }
     catch {
         Write-Host "Error retrieving site drives: $_" -ForegroundColor Red
+        Write-Host "Exception details: $($_.Exception.Message)" -ForegroundColor Red
         return $null
     }
 }
@@ -287,6 +341,11 @@ function Get-DocumentLibraryDrive {
     param (
         [array]$Drives
     )
+    
+    if ($null -eq $Drives -or $Drives.Count -eq 0) {
+        Write-Host "Error: No drives provided" -ForegroundColor Red
+        return $null
+    }
     
     # Usually "Documents" is the main document library
     $documentDrive = $Drives | Where-Object { $_.Name -eq "Documents" }
@@ -306,7 +365,7 @@ function Get-DocumentLibraryDrive {
     return $null
 }
 
-# Fixed recursive file information function
+# FIXED: Improved recursive file information function
 function Get-FileInfoRecursively {
     param (
         [string]$DriveId,
@@ -316,14 +375,40 @@ function Get-FileInfoRecursively {
     )
     
     try {
-        # Get children of the current item
-        $children = Get-MgDriveItemChild -DriveId $DriveId -DriveItemId $ItemId
+        # Add null check for parameters
+        if ([string]::IsNullOrEmpty($DriveId) -or [string]::IsNullOrEmpty($ItemId)) {
+            Write-Host "ERROR: DriveId or ItemId is null or empty!" -ForegroundColor Red
+            Write-Host "  DriveId: '$DriveId'" -ForegroundColor Red
+            Write-Host "  ItemId: '$ItemId'" -ForegroundColor Red
+            return $FileList
+        }
+        
+        Write-Host "Getting children for item: $ItemId in drive: $DriveId" -ForegroundColor DarkCyan
+        
+        # Get children of the current item with explicit error handling
+        try {
+            $children = Get-MgDriveItemChild -DriveId $DriveId -DriveItemId $ItemId -ErrorAction Stop
+        }
+        catch {
+            Write-Host "Error retrieving children for item '$ItemId': $($_.Exception.Message)" -ForegroundColor Red
+            return $FileList
+        }
+        
+        if ($null -eq $children) {
+            Write-Host "No children found or returned null. Path: $CurrentPath" -ForegroundColor Yellow
+            return $FileList
+        }
         
         # Add debug information
         Write-Host "Found $($children.Count) items in folder: $CurrentPath" -ForegroundColor DarkCyan
         
         foreach ($child in $children) {
-            $childPath = if ($CurrentPath -eq "") { $child.Name } else { "$CurrentPath/$($child.Name)" }
+            if ($null -eq $child) {
+                Write-Host "Warning: Null child item found. Skipping..." -ForegroundColor Yellow
+                continue
+            }
+            
+            $childPath = if ([string]::IsNullOrEmpty($CurrentPath)) { $child.Name } else { "$CurrentPath/$($child.Name)" }
             
             # FIXED LOGIC: If Folder property exists, treat as folder regardless of File property
             $isFolder = ($null -ne $child.Folder) -or 
@@ -342,16 +427,24 @@ function Get-FileInfoRecursively {
             if (-not $isFolder) {
                 Write-Host "Processing file: $childPath" -ForegroundColor DarkCyan
                 
-                # Create file info object
+                # Create file info object with null checks
                 $fileInfo = [PSCustomObject]@{
                     FileName = $child.Name
-                    FileExtension = [System.IO.Path]::GetExtension($child.Name)
+                    FileExtension = if ($child.Name) { [System.IO.Path]::GetExtension($child.Name) } else { "" }
                     FilePath = $childPath
                     CreatedDateTime = $child.CreatedDateTime
                     ModifiedDateTime = $child.LastModifiedDateTime
-                    CreatedBy = if ($child.CreatedBy.User.DisplayName) { $child.CreatedBy.User.DisplayName } else { "Unknown" }
-                    ModifiedBy = if ($child.LastModifiedBy.User.DisplayName) { $child.LastModifiedBy.User.DisplayName } else { "Unknown" }
-                    FileSize = [math]::Round(($child.Size / 1KB), 2)
+                    CreatedBy = if ($child.CreatedBy -and $child.CreatedBy.User -and $child.CreatedBy.User.DisplayName) { 
+                        $child.CreatedBy.User.DisplayName 
+                    } else { 
+                        "Unknown" 
+                    }
+                    ModifiedBy = if ($child.LastModifiedBy -and $child.LastModifiedBy.User -and $child.LastModifiedBy.User.DisplayName) { 
+                        $child.LastModifiedBy.User.DisplayName 
+                    } else { 
+                        "Unknown" 
+                    }
+                    FileSize = if ($child.Size) { [math]::Round(($child.Size / 1KB), 2) } else { 0 }
                     ItemType = "File"
                 }
                 
@@ -368,13 +461,27 @@ function Get-FileInfoRecursively {
                     FilePath = $childPath
                     CreatedDateTime = $child.CreatedDateTime
                     ModifiedDateTime = $child.LastModifiedDateTime
-                    CreatedBy = if ($child.CreatedBy.User.DisplayName) { $child.CreatedBy.User.DisplayName } else { "Unknown" }
-                    ModifiedBy = if ($child.LastModifiedBy.User.DisplayName) { $child.LastModifiedBy.User.DisplayName } else { "Unknown" }
+                    CreatedBy = if ($child.CreatedBy -and $child.CreatedBy.User -and $child.CreatedBy.User.DisplayName) { 
+                        $child.CreatedBy.User.DisplayName 
+                    } else { 
+                        "Unknown" 
+                    }
+                    ModifiedBy = if ($child.LastModifiedBy -and $child.LastModifiedBy.User -and $child.LastModifiedBy.User.DisplayName) { 
+                        $child.LastModifiedBy.User.DisplayName 
+                    } else { 
+                        "Unknown" 
+                    }
                     FileSize = 0
                     ItemType = "Folder"
                 }
                 
                 $FileList += $folderInfo
+                
+                # Check if child.Id is null before recursing
+                if ([string]::IsNullOrEmpty($child.Id)) {
+                    Write-Host "Warning: Child folder ID is null. Cannot process folder: $childPath" -ForegroundColor Yellow
+                    continue
+                }
                 
                 # Process folder contents recursively
                 $FileList = Get-FileInfoRecursively -DriveId $DriveId -ItemId $child.Id -CurrentPath $childPath -FileList $FileList
@@ -384,7 +491,9 @@ function Get-FileInfoRecursively {
         return $FileList
     }
     catch {
-        Write-Host "Error processing items: $_" -ForegroundColor Red
+        Write-Host "Error processing items at path '$CurrentPath': $_" -ForegroundColor Red
+        Write-Host "Error details: $($_.Exception.Message)" -ForegroundColor Red
+        Write-Host "Error stack trace: $($_.ScriptStackTrace)" -ForegroundColor Red
         return $FileList
     }
 }
@@ -397,6 +506,12 @@ function Get-FolderItem {
     )
     
     try {
+        # Check parameters
+        if ([string]::IsNullOrEmpty($DriveId)) {
+            Write-Host "Error: DriveId is null or empty" -ForegroundColor Red
+            return $null
+        }
+        
         Write-Host "Attempting to access folder: $Path" -ForegroundColor Cyan
         $folderItem = $null
         
@@ -415,7 +530,7 @@ function Get-FolderItem {
                 Write-Host "Successfully accessed folder with path: $pathFormat" -ForegroundColor Green
                 
                 # If we accessed root but need to go deeper
-                if ($pathFormat -eq "root" -and $Path) {
+                if ($pathFormat -eq "root" -and -not [string]::IsNullOrEmpty($Path)) {
                     Write-Host "Accessed root, attempting to navigate to: $Path" -ForegroundColor Yellow
                     
                     # Navigate through path segments
@@ -426,7 +541,21 @@ function Get-FolderItem {
                     foreach ($segment in $pathSegments) {
                         if ($segment) {
                             Write-Host "Looking for segment: $segment" -ForegroundColor Cyan
-                            $children = Get-MgDriveItemChild -DriveId $DriveId -DriveItemId $currentItem.Id
+                            
+                            try {
+                                $children = Get-MgDriveItemChild -DriveId $DriveId -DriveItemId $currentItem.Id -ErrorAction Stop
+                            }
+                            catch {
+                                Write-Host "Error retrieving children: $($_.Exception.Message)" -ForegroundColor Red
+                                $currentItem = $null
+                                break
+                            }
+                            
+                            if ($null -eq $children -or $children.Count -eq 0) {
+                                Write-Host "No children found in current folder" -ForegroundColor Yellow
+                                $currentItem = $null
+                                break
+                            }
                             
                             # Print available items for debugging
                             Write-Host "Available items:" -ForegroundColor DarkGray
@@ -480,6 +609,7 @@ function Get-FolderItem {
     }
     catch {
         Write-Host "Error accessing folder: $_" -ForegroundColor Red
+        Write-Host "Exception details: $($_.Exception.Message)" -ForegroundColor Red
         return $null
     }
 }
@@ -540,6 +670,12 @@ try {
         exit
     }
     
+    # Debug document drive info
+    Write-Host "Selected drive details:" -ForegroundColor Cyan
+    Write-Host "  Drive ID: $($documentDrive.Id)" -ForegroundColor Cyan
+    Write-Host "  Drive Name: $($documentDrive.Name)" -ForegroundColor Cyan
+    Write-Host "  Drive Type: $($documentDrive.DriveType)" -ForegroundColor Cyan
+    
     # Step 7: Get file information
     Write-Host "`nRetrieving file information for path: $($urlInfo.DocumentPath)" -ForegroundColor Green
     
@@ -548,6 +684,8 @@ try {
     
     if ($folderItem) {
         Write-Host "Starting recursive file scan from: $($folderItem.Name)" -ForegroundColor Green
+        Write-Host "Folder item ID: $($folderItem.Id)" -ForegroundColor Cyan
+        
         $fileList = Get-FileInfoRecursively -DriveId $documentDrive.Id -ItemId $folderItem.Id -CurrentPath $urlInfo.DocumentPath
     }
     else {
@@ -565,7 +703,9 @@ try {
     }
 }
 catch {
-    Write-Host "An error occurred: $_" -ForegroundColor Red
+    Write-Host "An error occurred in main script execution: $_" -ForegroundColor Red
+    Write-Host "Error details: $($_.Exception.Message)" -ForegroundColor Red
+    Write-Host "Stack trace: $($_.ScriptStackTrace)" -ForegroundColor Red
 }
 finally {
     # Disconnect from Microsoft Graph
