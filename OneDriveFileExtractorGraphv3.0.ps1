@@ -7,7 +7,10 @@ param (
     [string]$SharePointUrl,
     
     [Parameter(Mandatory=$false)]
-    [string]$OutputFile = "OneDriveFileInfo_$(Get-Date -Format 'yyyyMMdd_HHmmss').csv"
+    [string]$OutputFile = "OneDriveFileInfo_$(Get-Date -Format 'yyyyMMdd_HHmmss').csv",
+    
+    [Parameter(Mandatory=$false)]
+    [switch]$DebugMode
 )
 
 # Add System.Web for URL decoding
@@ -365,7 +368,7 @@ function Get-DocumentLibraryDrive {
     return $null
 }
 
-# FIXED: Improved recursive file information function
+# FIXED: Recursive file information function with error handling
 function Get-FileInfoRecursively {
     param (
         [string]$DriveId,
@@ -383,14 +386,44 @@ function Get-FileInfoRecursively {
             return $FileList
         }
         
-        Write-Host "Getting children for item: $ItemId in drive: $DriveId" -ForegroundColor DarkCyan
+        try {
+            # Retrieve the item details
+            $currentItem = Get-MgDriveItem -DriveId $DriveId -DriveItemId $ItemId -ErrorAction Stop
         
+            # Debug output - show the raw JSON if debug mode is on
+            if ($DebugMode) {
+                Write-Host "DEBUG: Full details for item $($currentItem.Name):" -ForegroundColor Magenta
+                $itemJson = $currentItem | ConvertTo-Json -Depth 5
+                Write-Host $itemJson -ForegroundColor Gray
+            }
+        
+            # Check if the item has a 'folder' facet — this means it's a folder
+            if (-not $currentItem.folder) {
+                Write-Host "Item '$($currentItem.Name)' is not a folder (no 'folder' facet). Skipping child retrieval." -ForegroundColor Yellow
+                return $FileList
+            }
+        
+            # At this point, we know it's a folder, continue with child retrieval logic...
+        
+        } catch {
+            Write-Host "Error retrieving item details for '$ItemId': $($_.Exception.Message)" -ForegroundColor Red
+            return $FileList
+        }
+        
+        
+        Write-Host "Getting children for item: $ItemId (name: $($currentItem.Name)) in drive: $DriveId" -ForegroundColor DarkCyan
+        
+        $IsFolder = $false
         # Get children of the current item with explicit error handling
         try {
             $children = Get-MgDriveItemChild -DriveId $DriveId -DriveItemId $ItemId -ErrorAction Stop
+            $IsFolder = $true
         }
         catch {
             Write-Host "Error retrieving children for item '$ItemId': $($_.Exception.Message)" -ForegroundColor Red
+            # If we couldn't get children, but the item doesn't have an extension, it might be an empty folder
+            # So we just return the current file list without error
+            $IsFolder = $false
             return $FileList
         }
         
@@ -410,27 +443,37 @@ function Get-FileInfoRecursively {
             
             $childPath = if ([string]::IsNullOrEmpty($CurrentPath)) { $child.Name } else { "$CurrentPath/$($child.Name)" }
             
-            # FIXED LOGIC: If Folder property exists, treat as folder regardless of File property
-            $isFolder = ($null -ne $child.Folder) -or 
-                       ($null -ne $child.Package) -or 
-                       ($child.MimeType -eq "application/x-ms-sharepoint") -or
-                       ($child.MimeType -like "*folder*")
+            # Debug output - dump the child item details
+            if ($DebugMode) {
+                Write-Host "DEBUG: Child item details for $($child.Name):" -ForegroundColor Magenta
+                $childJson = $child | ConvertTo-Json -Depth 5
+                Write-Host $childJson -ForegroundColor Gray
+            }
+
+            try {
+                $detailedItem = Get-MgDriveItem -DriveId $DriveId -DriveItemId $child.Id -ErrorAction Stop
             
-            # Debug output
-            Write-Host "Item: $($child.Name), Path: $childPath" -ForegroundColor DarkGray
-            Write-Host "  - File property: $(if ($child.File) { "Present" } else { "Absent" })" -ForegroundColor DarkGray
-            Write-Host "  - Folder property: $(if ($child.Folder) { "Present" } else { "Absent" })" -ForegroundColor DarkGray
-            Write-Host "  - MimeType: $($child.MimeType)" -ForegroundColor DarkGray
-            Write-Host "  - IsFolder determination: $isFolder" -ForegroundColor DarkGray
+                if ($DebugMode) {
+                    Write-Host "DEBUG: Detailed item JSON for '$($child.Name)':" -ForegroundColor Magenta
+                    $debugItemJson = $detailedItem | ConvertTo-Json -Depth 5
+                    Write-Host $debugItemJson -ForegroundColor Gray
+                }
+
+
+            }
+            catch {
+                Write-Host "Error retrieving detailed info for item '$($child.Name)': $($_.Exception.Message)" -ForegroundColor Red
+    
+            }
+            # Use $IsFolder value to determine processing
+            if (-not $IsFolder) {
+                Write-Host "Processing file: $childPath" -ForegroundColor Green
+                Write-Host "Item '$($child.Name)' is identified as a FILE" -ForegroundColor Yellow
             
-            # If item is a file
-            if (-not $isFolder) {
-                Write-Host "Processing file: $childPath" -ForegroundColor DarkCyan
-                
                 # Create file info object with null checks
                 $fileInfo = [PSCustomObject]@{
                     FileName = $child.Name
-                    FileExtension = if ($child.Name) { [System.IO.Path]::GetExtension($child.Name) } else { "" }
+                    FileExtension = $extension
                     FilePath = $childPath
                     CreatedDateTime = $child.CreatedDateTime
                     ModifiedDateTime = $child.LastModifiedDateTime
@@ -446,15 +489,14 @@ function Get-FileInfoRecursively {
                     }
                     FileSize = if ($child.Size) { [math]::Round(($child.Size / 1KB), 2) } else { 0 }
                     ItemType = "File"
+                    IsFolder = $IsFolder
                 }
-                
+            
                 $FileList += $fileInfo
             }
-            # If item is a folder, process recursively
             else {
                 Write-Host "Entering folder: $childPath" -ForegroundColor Cyan
-                
-                # Optionally, add folder to the file list as well with a different ItemType
+            
                 $folderInfo = [PSCustomObject]@{
                     FileName = $child.Name
                     FileExtension = ""
@@ -473,19 +515,22 @@ function Get-FileInfoRecursively {
                     }
                     FileSize = 0
                     ItemType = "Folder"
+                    IsFolder = $IsFolder
                 }
-                
+            
                 $FileList += $folderInfo
-                
-                # Check if child.Id is null before recursing
+            
+                # Recurse into folder
                 if ([string]::IsNullOrEmpty($child.Id)) {
                     Write-Host "Warning: Child folder ID is null. Cannot process folder: $childPath" -ForegroundColor Yellow
-                    continue
                 }
-                
-                # Process folder contents recursively
-                $FileList = Get-FileInfoRecursively -DriveId $DriveId -ItemId $child.Id -CurrentPath $childPath -FileList $FileList
+                else {
+                    $FileList = Get-FileInfoRecursively -DriveId $DriveId -ItemId $child.Id -CurrentPath $childPath -FileList $FileList
+                }
             }
+            
+            
+
         }
         
         return $FileList
